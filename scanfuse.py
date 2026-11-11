@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
 scanfuse - junta os scans web padrão (wafw00f, shcheck, sslscan, whatweb)
-em um único resultado (CSV, HTML e/ou Markdown), indicando para cada alvo se há ou não
+em um único resultado (CSV, HTML e Markdown), indicando para cada alvo se há ou não
 a vulnerabilidade.
 
 Uso rápido:
     python3 scanfuse.py -t https://exemplo.com.br
     python3 scanfuse.py -f alvos.txt -o resultado --threads 4
     python3 scanfuse.py --reparse resultado          # reprocessa os brutos já coletados
-    python3 scanfuse.py -t exemplo.com --format csv,html,md   # ou: --format all
+    python3 scanfuse.py -t exemplo.com --format csv           # só CSV (padrão: csv,html,md)
 
 Saídas (na pasta -o):
     achados.csv       uma linha por verificação (alvo, ferramenta, verificação, vulnerável, severidade, detalhe)
     matriz.csv        uma linha por alvo e uma coluna por verificação (SIM / NÃO / N/A)
     tecnologias.csv   inventário de tecnologias detectadas (whatweb)
-    relatorio.html    relatório único com matriz, achados e tecnologias (--format html)
-    relatorio.md      o mesmo relatório em Markdown (--format md)
+    relatorio.html    relatório único com matriz, achados e tecnologias
+    relatorio.md      o mesmo relatório em Markdown
     raw/              saída bruta de cada ferramenta, por alvo
 
 Use apenas contra alvos que você tem autorização para testar.
@@ -589,9 +589,9 @@ def main(argv=None) -> int:
     ap.add_argument("--timeout", type=int, default=300, help="timeout por ferramenta em s (padrão: 300)")
     ap.add_argument("--skip", default="", help="ferramentas a pular, separadas por vírgula")
     ap.add_argument("-d", "--delimiter", default=";", help="separador do CSV (padrão: ';' p/ Excel PT-BR)")
-    ap.add_argument("--format", dest="formats", type=parse_formats, default=["csv"],
+    ap.add_argument("--format", dest="formats", type=parse_formats, default=list(FORMATS),
                     metavar="FMT",
-                    help="formatos de saída separados por vírgula: csv, html, md ou all (padrão: csv)")
+                    help="formatos de saída separados por vírgula: csv, html, md ou all (padrão: all = csv,html,md)")
     ap.add_argument("-q", "--quiet", action="store_true")
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     args = ap.parse_args(argv)

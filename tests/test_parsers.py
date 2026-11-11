@@ -61,8 +61,13 @@ class Parsers(unittest.TestCase):
         self.assertEqual(sf.main(["--reparse", str(tmp), "-q", *extra]), 0)
         return tmp
 
-    def test_default_format_is_csv_only(self):
+    def test_default_format_is_all(self):
         tmp = self._reparse()
+        for n in ["achados.csv", "matriz.csv", "tecnologias.csv", "relatorio.html", "relatorio.md"]:
+            self.assertTrue((tmp / n).exists(), n)
+
+    def test_format_csv_only(self):
+        tmp = self._reparse("--format", "csv")
         self.assertTrue((tmp / "matriz.csv").exists())
         self.assertFalse((tmp / "relatorio.html").exists())
         self.assertFalse((tmp / "relatorio.md").exists())

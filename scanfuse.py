@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """
 scanfuse - junta os scans web padrão (wafw00f, shcheck, sslscan, whatweb)
-em um único resultado CSV, indicando para cada alvo se há ou não a vulnerabilidade.
+em um único resultado (CSV, HTML e/ou Markdown), indicando para cada alvo se há ou não
+a vulnerabilidade.
 
 Uso rápido:
     python3 scanfuse.py -t https://exemplo.com.br
     python3 scanfuse.py -f alvos.txt -o resultado --threads 4
     python3 scanfuse.py --reparse resultado          # reprocessa os brutos já coletados
+    python3 scanfuse.py -t exemplo.com --format csv,html,md   # ou: --format all
 
 Saídas (na pasta -o):
     achados.csv       uma linha por verificação (alvo, ferramenta, verificação, vulnerável, severidade, detalhe)
     matriz.csv        uma linha por alvo e uma coluna por verificação (SIM / NÃO / N/A)
     tecnologias.csv   inventário de tecnologias detectadas (whatweb)
+    relatorio.html    relatório único com matriz, achados e tecnologias (--format html)
+    relatorio.md      o mesmo relatório em Markdown (--format md)
     raw/              saída bruta de cada ferramenta, por alvo
 
 Use apenas contra alvos que você tem autorização para testar.
@@ -21,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import html
 import json
 import re
 import shutil
@@ -36,6 +41,8 @@ from urllib.parse import urlparse
 __version__ = "1.0.0"
 
 SIM, NAO, NA, INFO = "SIM", "NÃO", "N/A", "INFO"
+
+FORMATS = ("csv", "html", "md")
 
 
 # --------------------------------------------------------------------------- #
@@ -370,41 +377,209 @@ def parse_target_dir(d: Path) -> tuple[list[Finding], list[dict]]:
     return findings, techs
 
 
-def write_csvs(out_dir: Path, findings: list[Finding], techs: list[dict], delim: str) -> None:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    enc = "utf-8-sig"  # abre com acentos corretos no Excel
+FINDING_COLS = ["alvo", "ferramenta", "categoria", "verificacao", "vulneravel", "severidade", "detalhe"]
+TECH_COLS = ["alvo", "url", "tecnologia", "versao", "detalhe"]
 
-    cols = ["alvo", "ferramenta", "categoria", "verificacao", "vulneravel", "severidade", "detalhe"]
-    with open(out_dir / "achados.csv", "w", newline="", encoding=enc) as fh:
-        w = csv.DictWriter(fh, fieldnames=cols, delimiter=delim)
-        w.writeheader()
-        for f in findings:
-            w.writerow(asdict(f))
 
-    # matriz alvo x verificação
+def build_matrix(findings: list[Finding]) -> tuple[list[str], list[list]]:
+    """Retorna (cabeçalho, linhas) da matriz alvo x verificação."""
     checks = list(dict.fromkeys(f"[{f.ferramenta}] {f.verificacao}" for f in findings))
     alvos = list(dict.fromkeys(f.alvo for f in findings))
     grid = {a: {} for a in alvos}
     for f in findings:
         grid[f.alvo][f"[{f.ferramenta}] {f.verificacao}"] = f.vulneravel
+    rows = []
+    for a in alvos:
+        row = [grid[a].get(c, NA) for c in checks]
+        rows.append([a, row.count(SIM)] + row)
+    return ["alvo", "total_vulns"] + checks, rows
+
+
+def write_csvs(out_dir: Path, findings: list[Finding], techs: list[dict], delim: str) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    enc = "utf-8-sig"  # abre com acentos corretos no Excel
+
+    with open(out_dir / "achados.csv", "w", newline="", encoding=enc) as fh:
+        w = csv.DictWriter(fh, fieldnames=FINDING_COLS, delimiter=delim)
+        w.writeheader()
+        for f in findings:
+            w.writerow(asdict(f))
+
+    # matriz alvo x verificação
+    header, rows = build_matrix(findings)
     with open(out_dir / "matriz.csv", "w", newline="", encoding=enc) as fh:
         w = csv.writer(fh, delimiter=delim)
-        w.writerow(["alvo", "total_vulns"] + checks)
-        for a in alvos:
-            row = [grid[a].get(c, NA) for c in checks]
-            w.writerow([a, row.count(SIM)] + row)
+        w.writerow(header)
+        w.writerows(rows)
 
     with open(out_dir / "tecnologias.csv", "w", newline="", encoding=enc) as fh:
-        w = csv.DictWriter(fh, fieldnames=["alvo", "url", "tecnologia", "versao", "detalhe"],
-                           delimiter=delim)
+        w = csv.DictWriter(fh, fieldnames=TECH_COLS, delimiter=delim)
         w.writeheader()
         w.writerows(techs)
+
+
+# --------------------------------------------------------------------------- #
+# Relatórios HTML / Markdown
+# --------------------------------------------------------------------------- #
+def _summary(findings: list[Finding]) -> dict:
+    alvos = list(dict.fromkeys(f.alvo for f in findings))
+    vulns = [f for f in findings if f.vulneravel == SIM]
+    sev = {}
+    for f in vulns:
+        k = f.severidade or "—"
+        sev[k] = sev.get(k, 0) + 1
+    return {"alvos": len(alvos), "verificacoes": len(findings), "vulneraveis": len(vulns), "sev": sev}
+
+
+def _sev_order(item):
+    order = {"Alta": 0, "Média": 1, "Baixa": 2, "Info": 3}
+    return order.get(item[0], 9)
+
+
+def _generated_at() -> str:
+    return datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z").strip()
+
+
+def write_html(out_dir: Path, findings: list[Finding], techs: list[dict]) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    e = lambda v: html.escape(str(v), quote=True)  # saída das ferramentas não é confiável
+
+    def cls(v):
+        return {SIM: "sim", NAO: "nao", NA: "na", INFO: "info"}.get(v, "")
+
+    def table(header, rows, status_cols=()):
+        out = ["<div class=\"wrap\"><table><thead><tr>"]
+        out += [f"<th>{e(h)}</th>" for h in header]
+        out.append("</tr></thead><tbody>")
+        for r in rows:
+            out.append("<tr>")
+            for i, v in enumerate(r):
+                c = cls(v) if i in status_cols else ""
+                out.append(f"<td class=\"{c}\">{e(v)}</td>" if c else f"<td>{e(v)}</td>")
+            out.append("</tr>")
+        out.append("</tbody></table></div>")
+        return "".join(out)
+
+    s = _summary(findings)
+    m_head, m_rows = build_matrix(findings)
+    vi = FINDING_COLS.index("vulneravel")
+    sev_txt = ", ".join(f"{k}: {v}" for k, v in sorted(s["sev"].items(), key=_sev_order)) or "—"
+
+    doc = f"""<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>scanfuse - relatório</title>
+<style>
+body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:24px;color:#222;background:#fff}}
+h1{{margin:0 0 4px}} h2{{margin-top:32px;border-bottom:1px solid #ddd;padding-bottom:4px}}
+.meta{{color:#666;font-size:.9em}}
+.cards{{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}}
+.card{{border:1px solid #ddd;border-radius:6px;padding:10px 16px;min-width:140px}}
+.card b{{display:block;font-size:1.6em}}
+.wrap{{overflow-x:auto}}
+table{{border-collapse:collapse;font-size:.85em;width:100%}}
+th,td{{border:1px solid #ddd;padding:4px 8px;text-align:left;vertical-align:top}}
+th{{background:#f4f4f4;position:sticky;top:0}}
+td.sim{{background:#fdd;color:#900;font-weight:600}}
+td.nao{{background:#dfd;color:#060}}
+td.na{{background:#eee;color:#777}}
+td.info{{background:#def;color:#036}}
+</style>
+</head>
+<body>
+<h1>scanfuse - relatório</h1>
+<div class="meta">Gerado em {e(_generated_at())} · scanfuse {e(__version__)}</div>
+<div class="cards">
+<div class="card">Alvos<b>{s['alvos']}</b></div>
+<div class="card">Verificações<b>{s['verificacoes']}</b></div>
+<div class="card">Vulneráveis<b>{s['vulneraveis']}</b></div>
+<div class="card">Por severidade<b style="font-size:1em">{e(sev_txt)}</b></div>
+</div>
+<h2>Matriz</h2>
+{table(m_head, m_rows, status_cols=range(2, len(m_head)))}
+<h2>Achados</h2>
+{table(FINDING_COLS, [[getattr(f, c) for c in FINDING_COLS] for f in findings], status_cols=(vi,))}
+<h2>Tecnologias</h2>
+{table(TECH_COLS, [[t.get(c, "") for c in TECH_COLS] for t in techs])}
+<p class="meta">Use apenas contra alvos que você tem autorização para testar.</p>
+</body>
+</html>
+"""
+    (out_dir / "relatorio.html").write_text(doc, encoding="utf-8")
+
+
+def _md_cell(v) -> str:
+    """Escapa um valor para célula de tabela Markdown (saída das ferramentas não é confiável)."""
+    s = html.escape(str(v), quote=False)          # & < >  -> não vira HTML no renderizador
+    s = s.replace("\\", "\\\\").replace("|", "\\|").replace("`", "\\`")
+    s = re.sub(r"\r\n|\r|\n", "<br>", s)
+    return s or " "
+
+
+def _md_table(header, rows) -> str:
+    lines = ["| " + " | ".join(_md_cell(h) for h in header) + " |",
+             "|" + "|".join("---" for _ in header) + "|"]
+    lines += ["| " + " | ".join(_md_cell(v) for v in r) + " |" for r in rows]
+    return "\n".join(lines)
+
+
+def write_md(out_dir: Path, findings: list[Finding], techs: list[dict]) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    s = _summary(findings)
+    m_head, m_rows = build_matrix(findings)
+    sev_txt = ", ".join(f"{k}: {v}" for k, v in sorted(s["sev"].items(), key=_sev_order)) or "—"
+    parts = [
+        "# scanfuse - relatório",
+        "",
+        f"Gerado em {_generated_at()} · scanfuse {__version__}",
+        "",
+        f"- **Alvos:** {s['alvos']}",
+        f"- **Verificações:** {s['verificacoes']}",
+        f"- **Vulneráveis:** {s['vulneraveis']}",
+        f"- **Por severidade:** {sev_txt}",
+        "",
+        "## Matriz",
+        "",
+        _md_table(m_head, m_rows) if m_rows else "_Nenhum resultado._",
+        "",
+        "## Achados",
+        "",
+        _md_table(FINDING_COLS, [[getattr(f, c) for c in FINDING_COLS] for f in findings])
+        if findings else "_Nenhum achado._",
+        "",
+        "## Tecnologias",
+        "",
+        _md_table(TECH_COLS, [[t.get(c, "") for c in TECH_COLS] for t in techs])
+        if techs else "_Nenhuma tecnologia detectada._",
+        "",
+        "> Use apenas contra alvos que você tem autorização para testar.",
+        "",
+    ]
+    (out_dir / "relatorio.md").write_text("\n".join(parts), encoding="utf-8")
+
+
+def parse_formats(value: str) -> list[str]:
+    items = [x.strip().lower() for x in value.split(",") if x.strip()]
+    if not items:
+        raise argparse.ArgumentTypeError("informe ao menos um formato")
+    if "all" in items:
+        return list(FORMATS)
+    alias = {"markdown": "md", "htm": "html"}
+    items = [alias.get(x, x) for x in items]
+    bad = [x for x in items if x not in FORMATS]
+    if bad:
+        raise argparse.ArgumentTypeError(
+            f"formato inválido: {', '.join(bad)} (use {', '.join(FORMATS)} ou all)")
+    return list(dict.fromkeys(items))
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         prog="scanfuse",
-        description="Consolida wafw00f, shcheck, sslscan e whatweb em CSV (vulnerável SIM/NÃO).")
+        description="Consolida wafw00f, shcheck, sslscan e whatweb em CSV/HTML/Markdown "
+                    "(vulnerável SIM/NÃO).")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("-t", "--target", action="append", help="alvo (URL ou host). Pode repetir.")
     g.add_argument("-f", "--file", help="arquivo com um alvo por linha")
@@ -414,6 +589,9 @@ def main(argv=None) -> int:
     ap.add_argument("--timeout", type=int, default=300, help="timeout por ferramenta em s (padrão: 300)")
     ap.add_argument("--skip", default="", help="ferramentas a pular, separadas por vírgula")
     ap.add_argument("-d", "--delimiter", default=";", help="separador do CSV (padrão: ';' p/ Excel PT-BR)")
+    ap.add_argument("--format", dest="formats", type=parse_formats, default=["csv"],
+                    metavar="FMT",
+                    help="formatos de saída separados por vírgula: csv, html, md ou all (padrão: csv)")
     ap.add_argument("-q", "--quiet", action="store_true")
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     args = ap.parse_args(argv)
@@ -449,9 +627,18 @@ def main(argv=None) -> int:
             findings += f
             techs += t
 
-    write_csvs(out_dir, findings, techs, args.delimiter)
+    produced = []
+    if "csv" in args.formats:
+        write_csvs(out_dir, findings, techs, args.delimiter)
+        produced += ["achados.csv", "matriz.csv", "tecnologias.csv"]
+    if "html" in args.formats:
+        write_html(out_dir, findings, techs)
+        produced.append("relatorio.html")
+    if "md" in args.formats:
+        write_md(out_dir, findings, techs)
+        produced.append("relatorio.md")
     vulns = sum(f.vulneravel == SIM for f in findings)
-    log(f"[+] {len(findings)} verificações, {vulns} vulneráveis -> {out_dir}/achados.csv, matriz.csv, tecnologias.csv")
+    log(f"[+] {len(findings)} verificações, {vulns} vulneráveis -> {out_dir}/{', '.join(produced)}")
     return 0
 
 

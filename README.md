@@ -1,6 +1,6 @@
 # scanfuse
 
-Consolida os scans web padrão de um pentest/recon em **um único CSV**, com uma tabela que diz, por alvo, se cada vulnerabilidade está presente (`SIM`) ou não (`NÃO`).
+Consolida os scans web padrão de um pentest/recon em **um único resultado** (CSV, HTML e/ou Markdown), com uma tabela que diz, por alvo, se cada vulnerabilidade está presente (`SIM`) ou não (`NÃO`).
 
 | Ferramenta | O que verifica |
 |---|---|
@@ -29,9 +29,12 @@ python3 scanfuse.py -t alvo1.com -t https://alvo2.com:8443
 python3 scanfuse.py -f alvos.txt -o resultado --threads 4 --timeout 300
 python3 scanfuse.py -f alvos.txt --skip whatweb,wafw00f
 python3 scanfuse.py --reparse resultado      # regera os CSVs a partir de resultado/raw sem escanear de novo
+python3 scanfuse.py -t alvo.com --format html,md    # relatório HTML + Markdown (sem CSV)
+python3 scanfuse.py -t alvo.com --format all        # CSV + HTML + Markdown
+python3 scanfuse.py --reparse resultado --format all  # gera HTML/MD de um scan já feito
 ```
 
-Opções úteis: `-d ','` muda o separador (o padrão é `;` para abrir direto no Excel em PT-BR), `-q` silencia o log.
+Opções úteis: `--format` escolhe os formatos de saída (`csv`, `html`, `md`, separados por vírgula, ou `all`; padrão: `csv`), `-d ','` muda o separador do CSV (o padrão é `;` para abrir direto no Excel em PT-BR), `-q` silencia o log.
 
 ## Saídas
 
@@ -40,6 +43,8 @@ resultado/
 ├── achados.csv       alvo;ferramenta;categoria;verificacao;vulneravel;severidade;detalhe
 ├── matriz.csv        alvo;total_vulns;[sslscan] TLSv1.0 habilitado;[shcheck] Ausência ...;...
 ├── tecnologias.csv   alvo;url;tecnologia;versao;detalhe
+├── relatorio.html    (--format html) resumo + matriz colorida + achados + tecnologias, num arquivo só
+├── relatorio.md      (--format md)   o mesmo relatório em tabelas Markdown (GitHub, Obsidian, wiki…)
 └── raw/<host_porta>/ saída bruta de cada ferramenta (+ .log com o comando executado)
 ```
 

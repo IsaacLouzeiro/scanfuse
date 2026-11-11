@@ -54,5 +54,61 @@ class Parsers(unittest.TestCase):
         shutil.rmtree(tmp)
 
 
+    def _reparse(self, *extra):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        shutil.copytree(FIX.parent, tmp / "raw")
+        self.assertEqual(sf.main(["--reparse", str(tmp), "-q", *extra]), 0)
+        return tmp
+
+    def test_default_format_is_csv_only(self):
+        tmp = self._reparse()
+        self.assertTrue((tmp / "matriz.csv").exists())
+        self.assertFalse((tmp / "relatorio.html").exists())
+        self.assertFalse((tmp / "relatorio.md").exists())
+
+    def test_html_and_md_formats(self):
+        tmp = self._reparse("--format", "html,md")
+        self.assertFalse((tmp / "matriz.csv").exists())
+        h = (tmp / "relatorio.html").read_text(encoding="utf-8")
+        self.assertIn("<h2>Matriz</h2>", h)
+        self.assertIn("https://legado.exemplo", h)
+        self.assertIn('class="sim"', h)
+        self.assertIn("WordPress", h)
+        m = (tmp / "relatorio.md").read_text(encoding="utf-8")
+        self.assertIn("## Achados", m)
+        self.assertIn("| https://legado.exemplo |", m)
+        self.assertIn("RC4-SHA", m)
+
+    def test_format_all(self):
+        tmp = self._reparse("--format", "all")
+        for n in ["achados.csv", "matriz.csv", "tecnologias.csv", "relatorio.html", "relatorio.md"]:
+            self.assertTrue((tmp / n).exists(), n)
+
+    def test_parse_formats(self):
+        self.assertEqual(sf.parse_formats("HTML, markdown,csv,html"), ["html", "md", "csv"])
+        self.assertEqual(sf.parse_formats("all"), ["csv", "html", "md"])
+        with self.assertRaises(sf.argparse.ArgumentTypeError):
+            sf.parse_formats("pdf")
+        with self.assertRaises(SystemExit):
+            sf.main(["--reparse", "x", "--format", "xls", "-q"])
+
+    def test_untrusted_content_is_escaped(self):
+        evil = sf.Finding("https://a", "shcheck", "Headers", "Divulgação", sf.SIM, "Baixa",
+                          "Server: <script>alert(1)</script> | x\nlinha2")
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        sf.write_html(tmp, [evil], [])
+        sf.write_md(tmp, [evil], [])
+        h = (tmp / "relatorio.html").read_text(encoding="utf-8")
+        self.assertNotIn("<script>", h)
+        self.assertIn("&lt;script&gt;", h)
+        m = (tmp / "relatorio.md").read_text(encoding="utf-8")
+        self.assertNotIn("<script>", m)
+        self.assertIn("\\| x<br>linha2", m)
+        achados = m.split("## Achados", 1)[1].split("## Tecnologias", 1)[0]
+        row = [l for l in achados.splitlines() if l.startswith("| https://a |")][0]
+        self.assertEqual(row.count(" | "), len(sf.FINDING_COLS) - 1)
+
 if __name__ == "__main__":
     unittest.main()

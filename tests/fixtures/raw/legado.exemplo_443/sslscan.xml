@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document title="SSLScan Results" version="2.1.4" web="http://github.com/rbsec/sslscan">
+ <ssltest host="legado.exemplo" sniname="legado.exemplo" port="443">
+  <protocol type="ssl" version="2" enabled="0" />
+  <protocol type="ssl" version="3" enabled="1" />
+  <protocol type="tls" version="1.0" enabled="1" />
+  <protocol type="tls" version="1.1" enabled="1" />
+  <protocol type="tls" version="1.2" enabled="1" />
+  <protocol type="tls" version="1.3" enabled="0" />
+  <fallback supported="0" />
+  <renegotiation supported="1" secure="0" />
+  <compression supported="0" />
+  <heartbleed sslversion="TLSv1.2" vulnerable="1" />
+  <heartbleed sslversion="TLSv1.1" vulnerable="0" />
+  <cipher status="preferred" sslversion="TLSv1.2" bits="128" cipher="ECDHE-RSA-AES128-GCM-SHA256" id="0xC02F" strength="strong" />
+  <cipher status="accepted" sslversion="TLSv1.0" bits="112" cipher="DES-CBC3-SHA" id="0x000A" strength="medium" />
+  <cipher status="accepted" sslversion="SSLv3" bits="128" cipher="RC4-SHA" id="0x0005" strength="medium" />
+  <certificates>
+   <certificate type="short">
+    <signature-algorithm>sha1WithRSAEncryption</signature-algorithm>
+    <pk type="RSA" bits="1024" />
+    <subject><![CDATA[legado.exemplo]]></subject>
+    <issuer><![CDATA[legado.exemplo]]></issuer>
+    <self-signed>true</self-signed>
+    <not-valid-before>Jan  1 00:00:00 2015 GMT</not-valid-before>
+    <not-valid-after>Jan  1 00:00:00 2020 GMT</not-valid-after>
+    <expired>true</expired>
+   </certificate>
+  </certificates>
+ </ssltest>
+</document>

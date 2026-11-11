@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+scanfuse_*/
+resultado*/
+.venv/
+venv/
+.DS_Store

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <document title="SSLScan Results" version="2.1.4" web="http://github.com/rbsec/sslscan">
- <ssltest host="legado.exemplo" sniname="legado.exemplo" port="443">
+ <ssltest host="legacy.example" sniname="legacy.example" port="443">
   <protocol type="ssl" version="2" enabled="0" />
   <protocol type="ssl" version="3" enabled="1" />
   <protocol type="tls" version="1.0" enabled="1" />
@@ -19,8 +19,8 @@
    <certificate type="short">
     <signature-algorithm>sha1WithRSAEncryption</signature-algorithm>
     <pk type="RSA" bits="1024" />
-    <subject><![CDATA[legado.exemplo]]></subject>
-    <issuer><![CDATA[legado.exemplo]]></issuer>
+    <subject><![CDATA[legacy.example]]></subject>
+    <issuer><![CDATA[legacy.example]]></issuer>
     <self-signed>true</self-signed>
     <not-valid-before>Jan  1 00:00:00 2015 GMT</not-valid-before>
     <not-valid-after>Jan  1 00:00:00 2020 GMT</not-valid-after>

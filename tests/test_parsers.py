@@ -1,59 +1,111 @@
-import shutil, sys, tempfile, unittest, csv
+import csv
+import re
+import shutil
+import string
+import sys
+import tempfile
+import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import scanfuse as sf
 
-FIX = Path(__file__).parent / "fixtures" / "raw" / "legado.exemplo_443"
+FIX = Path(__file__).parent / "fixtures" / "raw" / "legacy.example_443"
+ALL_FILES = ["findings.csv", "matrix.csv", "technologies.csv", "report.html", "report.md"]
 
 
 def by_check(findings):
-    return {f.verificacao: f for f in findings}
+    return {f.check: f for f in findings}
+
+
+def fixture_findings():
+    return sf.parse_target_dir(FIX)
 
 
 class Parsers(unittest.TestCase):
     def test_sslscan(self):
         r = by_check(sf.parse_sslscan("x", FIX / "sslscan.xml"))
-        for c in ["SSLv3 habilitado", "TLSv1.0 habilitado", "TLSv1.1 habilitado",
-                  "TLSv1.3 não suportado", "Heartbleed (CVE-2014-0160)", "Renegociação insegura",
-                  "Sem TLS_FALLBACK_SCSV", "Certificado expirado", "Certificado autoassinado",
-                  "Assinatura fraca do certificado (MD5/SHA1)", "Chave do certificado fraca",
-                  "Cifras fracas (NULL/EXPORT/RC4/DES/anon)", "Cifras médias (ex: 3DES, CBC sem PFS)"]:
-            self.assertEqual(r[c].vulneravel, sf.SIM, c)
-        self.assertEqual(r["SSLv2 habilitado"].vulneravel, sf.NAO)
-        self.assertEqual(r["Compressão TLS (CRIME)"].vulneravel, sf.NAO)
-        self.assertIn("RC4-SHA", r["Cifras fracas (NULL/EXPORT/RC4/DES/anon)"].detalhe)
+        for c in ["protocol:SSLv3", "protocol:TLSv1.0", "protocol:TLSv1.1", "no_tls13",
+                  "heartbleed", "insecure_renegotiation", "no_fallback_scsv", "cert_expired",
+                  "cert_self_signed", "cert_weak_signature", "cert_weak_key",
+                  "weak_ciphers", "medium_ciphers"]:
+            self.assertEqual(r[c].status, sf.VULN, c)
+            self.assertIn(r[c].severity, sf.SEVERITIES, c)
+        self.assertEqual(r["protocol:SSLv2"].status, sf.OK)
+        self.assertEqual(r["protocol:SSLv2"].severity, "")
+        self.assertEqual(r["tls_compression"].status, sf.OK)
+        self.assertEqual(r["protocol:SSLv3"].severity, "high")
+        self.assertIn("RC4-SHA", r["weak_ciphers"].evidence)
 
     def test_shcheck(self):
         r = by_check(sf.parse_shcheck("x", FIX / "shcheck.json"))
-        self.assertEqual(r["Ausência X-Frame-Options"].vulneravel, sf.NAO)
-        self.assertEqual(r["Ausência Strict-Transport-Security"].vulneravel, sf.SIM)  # max-age baixo
-        self.assertEqual(r["Ausência Content-Security-Policy"].vulneravel, sf.SIM)    # unsafe-inline
-        self.assertEqual(r["Ausência Referrer-Policy"].vulneravel, sf.SIM)
-        self.assertIn("PHP/7.2.24", r["Divulgação de informação em headers"].detalhe)
+        self.assertEqual(r["header:X-Frame-Options"].status, sf.OK)
+        hsts = r["header:Strict-Transport-Security"]
+        self.assertEqual((hsts.status, hsts.severity, hsts.msg), (sf.VULN, "low", "hsts_low"))
+        self.assertEqual(r["header:Content-Security-Policy"].msg, "csp_weak")
+        ref = r["header:Referrer-Policy"]
+        self.assertEqual((ref.status, ref.severity, ref.msg), (sf.VULN, "low", "header_missing"))
+        self.assertIn("PHP/7.2.24", r["info_disclosure"].evidence)
+
+    def test_csp_wildcard_detection(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        cases = {
+            "default-src 'self' *.example.org https://cdn.example.org": sf.OK,
+            "default-src *": sf.VULN,
+            "default-src 'self'; img-src *; script-src 'self'": sf.VULN,
+            "script-src 'self' 'unsafe-eval'": sf.VULN,
+        }
+        for csp, expected in cases.items():
+            p = tmp / "shcheck.json"
+            p.write_text(sf.json.dumps({"https://a": {"present": {"Content-Security-Policy": csp}}}))
+            r = by_check(sf.parse_shcheck("x", p))
+            self.assertEqual(r["header:Content-Security-Policy"].status, expected, csp)
 
     def test_wafw00f(self):
         (f,) = sf.parse_wafw00f("x", FIX / "wafw00f.json")
-        self.assertEqual(f.vulneravel, sf.SIM)
+        self.assertEqual((f.status, f.severity), (sf.VULN, "low"))
 
     def test_whatweb(self):
         (f,), techs = sf.parse_whatweb("x", FIX / "whatweb.json")
-        self.assertEqual(f.vulneravel, sf.SIM)
-        names = {t["tecnologia"] for t in techs}
+        self.assertEqual(f.status, sf.VULN)
+        names = {t["technology"] for t in techs}
         self.assertTrue({"Apache", "PHP", "WordPress", "JQuery"} <= names)
         self.assertNotIn("Country", names)
 
-    def test_reparse_end_to_end(self):
-        tmp = Path(tempfile.mkdtemp())
-        shutil.copytree(FIX.parent, tmp / "raw")
-        self.assertEqual(sf.main(["--reparse", str(tmp), "-q"]), 0)
-        with open(tmp / "matriz.csv", encoding="utf-8-sig") as fh:
-            rows = list(csv.reader(fh, delimiter=";"))
-        self.assertEqual(rows[1][0], "https://legado.exemplo")
-        self.assertGreater(int(rows[1][1]), 15)
-        shutil.rmtree(tmp)
+
+class Translations(unittest.TestCase):
+    def test_languages_have_same_keys(self):
+        self.assertEqual(set(sf.I18N["en"]), set(sf.I18N["pt"]))
+
+    def test_placeholders_match(self):
+        fmt = string.Formatter()
+        for key, en in sf.I18N["en"].items():
+            pt = sf.I18N["pt"][key]
+            names = lambda s: {n for _, n, _, _ in fmt.parse(s) if n}
+            self.assertEqual(names(en), names(pt), key)
+
+    def test_every_check_has_title_and_recommendation(self):
+        findings, _ = fixture_findings()
+        for lang in sf.LANGS:
+            for f in findings:
+                self.assertTrue(sf.check_title(f.check, lang), (lang, f.check))
+                self.assertNotIn("{", sf.check_title(f.check, lang))
+                if f.status == sf.VULN:
+                    self.assertTrue(sf.recommendation(f.check, lang), (lang, f.check))
+                    self.assertTrue(sf.sev_label(f.severity, lang), (lang, f.check))
+        for h in sf.SEC_HEADERS:
+            for lang in sf.LANGS:
+                self.assertIn(f"rec.header:{h}", sf.I18N[lang])
+
+    def test_parse_lang(self):
+        self.assertEqual(sf.parse_lang("PT-BR"), "pt")
+        self.assertEqual(sf.parse_lang("en"), "en")
+        with self.assertRaises(sf.argparse.ArgumentTypeError):
+            sf.parse_lang("es")
 
 
+class EndToEnd(unittest.TestCase):
     def _reparse(self, *extra):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp)
@@ -61,34 +113,74 @@ class Parsers(unittest.TestCase):
         self.assertEqual(sf.main(["--reparse", str(tmp), "-q", *extra]), 0)
         return tmp
 
-    def test_default_format_is_all(self):
+    def _csv(self, path, delim):
+        with open(path, encoding="utf-8-sig", newline="") as fh:
+            return list(csv.reader(fh, delimiter=delim))
+
+    def test_default_is_all_formats_in_english(self):
         tmp = self._reparse()
-        for n in ["achados.csv", "matriz.csv", "tecnologias.csv", "relatorio.html", "relatorio.md"]:
+        for n in ALL_FILES:
             self.assertTrue((tmp / n).exists(), n)
+        rows = self._csv(tmp / "matrix.csv", ",")
+        self.assertEqual(rows[0][:2], ["target", "total_vulns"])
+        self.assertEqual(rows[1][0], "https://legacy.example")
+        self.assertGreater(int(rows[1][1]), 15)
+        self.assertIn("YES", rows[1])
+        findings = self._csv(tmp / "findings.csv", ",")
+        self.assertEqual(findings[0], ["target", "tool", "category", "check", "vulnerable",
+                                       "severity", "detail", "recommendation"])
+        self.assertTrue(all(len(r) == 8 for r in findings))
+        h = (tmp / "report.html").read_text(encoding="utf-8")
+        self.assertIn('<html lang="en">', h)
+        self.assertIn("Executive summary", h)
+        self.assertIn("SSLv3 enabled", h)
+        self.assertIn("WordPress", h)
+        m = (tmp / "report.md").read_text(encoding="utf-8")
+        self.assertIn("## 2. Findings", m)
+        self.assertIn("Recommendation", m)
+        self.assertIn("RC4-SHA", m)
+
+    def test_portuguese_reports(self):
+        tmp = self._reparse("--lang", "pt")
+        rows = self._csv(tmp / "matrix.csv", ";")
+        self.assertEqual(rows[0][:2], ["alvo", "total_vulns"])
+        self.assertIn("SIM", rows[1])
+        self.assertIn("NÃO", rows[1])
+        techs = self._csv(tmp / "technologies.csv", ";")
+        self.assertEqual(techs[0], ["alvo", "url", "tecnologia", "versao", "detalhe"])
+        h = (tmp / "report.html").read_text(encoding="utf-8")
+        self.assertIn('<html lang="pt-BR">', h)
+        self.assertIn("Resumo executivo", h)
+        self.assertIn("SSLv3 habilitado", h)
+        self.assertNotIn("Executive summary", h)
+        m = (tmp / "report.md").read_text(encoding="utf-8")
+        self.assertIn("## 2. Achados", m)
+        self.assertIn("Recomendação", m)
+
+    def test_html_counts_match_findings(self):
+        tmp = self._reparse()
+        findings, _ = fixture_findings()
+        vulns = [f for f in findings if f.status == sf.VULN]
+        h = (tmp / "report.html").read_text(encoding="utf-8")
+        self.assertEqual(h.count('<article class="finding'), len(vulns))
+        self.assertEqual(len(re.findall(r'class="fid">F-\d+<', h)), len(vulns))
+        for s in sf.SEVERITIES:
+            n = sum(f.severity == s for f in vulns)
+            label = sf.sev_label(s, "en")
+            self.assertIn(f'<div class="sev-card {s}"><span>{label}</span><b>{n}</b></div>', h)
+        # findings are listed from most to least severe
+        sevs = re.findall(r'<article class="finding (\w+)"', h)
+        self.assertEqual(sevs, sorted(sevs, key=sf.sev_rank))
 
     def test_format_csv_only(self):
         tmp = self._reparse("--format", "csv")
-        self.assertTrue((tmp / "matriz.csv").exists())
-        self.assertFalse((tmp / "relatorio.html").exists())
-        self.assertFalse((tmp / "relatorio.md").exists())
+        self.assertTrue((tmp / "matrix.csv").exists())
+        self.assertFalse((tmp / "report.html").exists())
+        self.assertFalse((tmp / "report.md").exists())
 
-    def test_html_and_md_formats(self):
-        tmp = self._reparse("--format", "html,md")
-        self.assertFalse((tmp / "matriz.csv").exists())
-        h = (tmp / "relatorio.html").read_text(encoding="utf-8")
-        self.assertIn("<h2>Matriz</h2>", h)
-        self.assertIn("https://legado.exemplo", h)
-        self.assertIn('class="sim"', h)
-        self.assertIn("WordPress", h)
-        m = (tmp / "relatorio.md").read_text(encoding="utf-8")
-        self.assertIn("## Achados", m)
-        self.assertIn("| https://legado.exemplo |", m)
-        self.assertIn("RC4-SHA", m)
-
-    def test_format_all(self):
-        tmp = self._reparse("--format", "all")
-        for n in ["achados.csv", "matriz.csv", "tecnologias.csv", "relatorio.html", "relatorio.md"]:
-            self.assertTrue((tmp / n).exists(), n)
+    def test_delimiter_override(self):
+        tmp = self._reparse("--format", "csv", "-d", ";")
+        self.assertEqual(self._csv(tmp / "matrix.csv", ";")[0][0], "target")
 
     def test_parse_formats(self):
         self.assertEqual(sf.parse_formats("HTML, markdown,csv,html"), ["html", "md", "csv"])
@@ -98,22 +190,43 @@ class Parsers(unittest.TestCase):
         with self.assertRaises(SystemExit):
             sf.main(["--reparse", "x", "--format", "xls", "-q"])
 
-    def test_untrusted_content_is_escaped(self):
-        evil = sf.Finding("https://a", "shcheck", "Headers", "Divulgação", sf.SIM, "Baixa",
-                          "Server: <script>alert(1)</script> | x\nlinha2")
+    def test_reparse_missing_raw_dir(self):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp)
-        sf.write_html(tmp, [evil], [])
-        sf.write_md(tmp, [evil], [])
-        h = (tmp / "relatorio.html").read_text(encoding="utf-8")
-        self.assertNotIn("<script>", h)
-        self.assertIn("&lt;script&gt;", h)
-        m = (tmp / "relatorio.md").read_text(encoding="utf-8")
-        self.assertNotIn("<script>", m)
-        self.assertIn("\\| x<br>linha2", m)
-        achados = m.split("## Achados", 1)[1].split("## Tecnologias", 1)[0]
-        row = [l for l in achados.splitlines() if l.startswith("| https://a |")][0]
-        self.assertEqual(row.count(" | "), len(sf.FINDING_COLS) - 1)
+        with self.assertRaises(SystemExit):
+            sf.main(["--reparse", str(tmp), "-q"])
+
+    def test_empty_results(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / "raw").mkdir()
+        self.assertEqual(sf.main(["--reparse", str(tmp), "-q"]), 0)
+        self.assertIn("No results were found.", (tmp / "report.html").read_text(encoding="utf-8"))
+        self.assertIn("No results were found.", (tmp / "report.md").read_text(encoding="utf-8"))
+
+    def test_untrusted_content_is_escaped(self):
+        evil = sf.Finding("https://a", "shcheck", "Headers", "info_disclosure", sf.VULN, "low",
+                          "Server: <script>alert(1)</script> | x\nline2 *b* {evidence}")
+        tech = {"target": "https://a", "url": "https://a", "technology": "<img src=x onerror=1>",
+                "version": "1|2", "detail": ""}
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        for lang in sf.LANGS:
+            sf.write_html(tmp, [evil], [tech], lang)
+            sf.write_md(tmp, [evil], [tech], lang)
+            h = (tmp / "report.html").read_text(encoding="utf-8")
+            self.assertNotIn("<script>", h)
+            self.assertNotIn("<img", h)
+            self.assertIn("&lt;script&gt;", h)
+            m = (tmp / "report.md").read_text(encoding="utf-8")
+            self.assertNotIn("<script>", m)
+            self.assertNotIn("<img", m)
+            self.assertIn("\\| x line2 \\*b\\* {evidence}", m)   # finding bullet
+            self.assertIn("| 1\\|2 |", m)
+            for line in m.splitlines():
+                if line.startswith("| ") and "1\\|2" in line:
+                    self.assertEqual(len(re.findall(r"(?<!\\)\|", line)), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

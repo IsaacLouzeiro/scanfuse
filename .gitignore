@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 scanfuse_*/
+results*/
 resultado*/
 .venv/
 venv/

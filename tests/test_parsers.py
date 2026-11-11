@@ -1,4 +1,6 @@
 import csv
+import hashlib
+import os
 import re
 import shutil
 import string
@@ -226,6 +228,149 @@ class EndToEnd(unittest.TestCase):
             for line in m.splitlines():
                 if line.startswith("| ") and "1\\|2" in line:
                     self.assertEqual(len(re.findall(r"(?<!\\)\|", line)), 4)
+
+
+FAKE_TOOL = """#!{python}
+import os, shutil, sys
+FIX = {fix!r}
+name = os.path.basename(sys.argv[0])
+args = sys.argv[1:]
+if args == ["--version"]:
+    if name == "shcheck.py":
+        sys.stderr.write("usage: shcheck.py [options] <target>\\n")
+        sys.exit(2)
+    print({{"wafw00f": "\\x1b[1;32m~ WAFW00F : v2.2.0 ~\\x1b[0m", "sslscan": "sslscan version 2.1.4 OpenSSL 3.0.13",
+           "whatweb": "WhatWeb version 0.5.5"}}[name])
+    sys.exit(0)
+if name == "wafw00f":
+    shutil.copy(os.path.join(FIX, "wafw00f.json"), args[args.index("-o") + 1])
+    print("\\x1b[1;34m[*]\\x1b[0m Checking " + args[0])
+    print("[-] No WAF detected by the generic detection")
+elif name == "shcheck.py":
+    sys.stdout.write(open(os.path.join(FIX, "shcheck.json")).read())
+elif name == "sslscan":
+    out = [a for a in args if a.startswith("--xml=")][0][6:]
+    shutil.copy(os.path.join(FIX, "sslscan.xml"), out)
+    print("\\x1b[32mTesting SSL server " + args[-1] + "\\x1b[0m")
+    sys.stderr.write("warning: something on stderr\\n")
+elif name == "whatweb":
+    out = [a for a in args if a.startswith("--log-json=")][0][11:]
+    shutil.copy(os.path.join(FIX, "whatweb.json"), out)
+    print(args[-1] + " [200 OK] Apache[2.4.29], PHP[7.2.24], WordPress[5.0]")
+"""
+
+
+class Evidence(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        bindir = self.tmp / "bin"
+        bindir.mkdir()
+        for name in ["wafw00f", "shcheck.py", "sslscan", "whatweb"]:
+            p = bindir / name
+            p.write_text(FAKE_TOOL.format(python=sys.executable, fix=str(FIX)))
+            p.chmod(0o755)
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = str(bindir)
+        self.addCleanup(os.environ.__setitem__, "PATH", old_path)
+
+    def scan(self, *extra):
+        out = self.tmp / "results"
+        self.assertEqual(sf.main(["-t", "https://legacy.example", "-o", str(out), "-q", *extra]), 0)
+        return out
+
+    def test_scan_creates_evidence(self):
+        out = self.scan()
+        ev = out / "evidence"
+        files = sorted(p.relative_to(ev).as_posix() for p in ev.rglob("*") if p.is_file())
+        self.assertEqual(files, ["README.txt", "SHA256SUMS.txt"] + [
+            f"legacy.example_443/{t}.txt" for t in ["shcheck", "sslscan", "wafw00f", "whatweb"]])
+
+        ssl = (ev / "legacy.example_443" / "sslscan.txt").read_text(encoding="utf-8")
+        self.assertIn("Tool:          sslscan 2.1.4", ssl)
+        self.assertIn("Target:        https://legacy.example (legacy.example:443)", ssl)
+        self.assertIn("Command:       sslscan --no-colour --xml=raw/legacy.example_443/sslscan.xml "
+                      "legacy.example:443", ssl)
+        self.assertRegex(ssl, r"Started:       \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC")
+        self.assertIn("Exit code:     0", ssl)
+        self.assertIn("Testing SSL server legacy.example:443", ssl)
+        self.assertIn("STANDARD ERROR", ssl)
+        self.assertNotIn("\x1b", ssl)
+        self.assertNotIn("Scanner host", ssl)
+
+        waf = (ev / "legacy.example_443" / "wafw00f.txt").read_text(encoding="utf-8")
+        self.assertIn("Tool:          wafw00f 2.2.0", waf)
+        self.assertNotIn("\x1b", waf)
+        self.assertNotIn("STANDARD ERROR", waf)
+        web = (ev / "legacy.example_443" / "whatweb.txt").read_text(encoding="utf-8")
+        self.assertIn("Tool:          whatweb 0.5.5", web)
+        self.assertIn("WordPress[5.0]", web)
+        self.assertNotIn(" -q ", web)
+        sh = (ev / "legacy.example_443" / "shcheck.txt").read_text(encoding="utf-8")
+        self.assertIn('  "https://legacy.example": {', sh)   # pretty-printed JSON
+
+        # no local absolute paths leak into the evidence
+        for p in ev.rglob("*.txt"):
+            self.assertNotIn(str(self.tmp), p.read_text(encoding="utf-8"), p)
+
+        # hashes match the files
+        for line in (ev / "SHA256SUMS.txt").read_text(encoding="utf-8").splitlines():
+            digest, rel = line.split("  ", 1)
+            self.assertEqual(hashlib.sha256((ev / rel).read_bytes()).hexdigest(), digest, rel)
+
+        readme = (ev / "README.txt").read_text(encoding="utf-8")
+        self.assertIn("https://legacy.example (legacy.example_443): wafw00f, shcheck, sslscan, whatweb", readme)
+
+        # reports link to the evidence and still contain the findings
+        h = (out / "report.html").read_text(encoding="utf-8")
+        self.assertIn('<a href="evidence/legacy.example_443/sslscan.txt">sslscan</a>', h)
+        self.assertIn("SSLv3 enabled", h)
+        m = (out / "report.md").read_text(encoding="utf-8")
+        self.assertIn("[whatweb](evidence/legacy.example_443/whatweb.txt)", m)
+
+    def test_evidence_host_flag(self):
+        out = self.scan("--evidence-host")
+        txt = (out / "evidence" / "legacy.example_443" / "wafw00f.txt").read_text(encoding="utf-8")
+        self.assertIn("Scanner host:", txt)
+
+    def test_no_evidence_flag(self):
+        out = self.scan("--no-evidence")
+        self.assertFalse((out / "evidence").exists())
+        self.assertNotIn("evidence/", (out / "report.html").read_text(encoding="utf-8"))
+        self.assertTrue((out / "report.html").exists())
+
+    def test_reparse_rebuilds_evidence(self):
+        out = self.scan()
+        shutil.rmtree(out / "evidence")
+        self.assertEqual(sf.main(["--reparse", str(out), "-q"]), 0)
+        self.assertTrue((out / "evidence" / "legacy.example_443" / "sslscan.txt").exists())
+
+    def test_skipped_tool_has_no_evidence(self):
+        out = self.scan("--skip", "whatweb")
+        self.assertFalse((out / "evidence" / "legacy.example_443" / "whatweb.txt").exists())
+        self.assertTrue((out / "evidence" / "legacy.example_443" / "sslscan.txt").exists())
+
+    def test_old_scans_without_metadata(self):
+        tmp = self.tmp / "old"
+        shutil.copytree(FIX.parent, tmp / "raw")
+        self.assertEqual(sf.main(["--reparse", str(tmp), "-q"]), 0)
+        self.assertFalse((tmp / "evidence").exists())
+
+    def test_render_evidence_timeout(self):
+        txt = sf.render_evidence({"tool": "sslscan", "exit_code": -1, "stderr": "timed out after 5s"})
+        self.assertIn("Exit code:     -1 (timed out or could not be started)", txt)
+        self.assertIn("(no output)", txt)
+        self.assertIn("Tool:          sslscan unknown", txt)
+
+
+class Versions(unittest.TestCase):
+    def test_version_regex(self):
+        def v(text):
+            m = sf.VERSION_RE.search(text)
+            return m.group(1) if m else None
+        self.assertEqual(v("sslscan version 2.1.4 OpenSSL 3.0.13"), "2.1.4")
+        self.assertEqual(v("~ WAFW00F : v2.2.0 ~"), "2.2.0")
+        self.assertIsNone(v("listening on 127.0.0.1"))
 
 
 if __name__ == "__main__":

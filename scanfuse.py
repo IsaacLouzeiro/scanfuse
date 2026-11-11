@@ -17,7 +17,9 @@ Outputs (in the -o folder):
     technologies.csv   technology inventory (whatweb)
     report.html        full report: executive summary, findings, matrix, inventory, scope
     report.md          the same report in Markdown
-    raw/               raw output of each tool, per target
+    evidence/          raw console output of each tool, with command, timestamps and
+                       version, plus SHA256SUMS.txt - to hand over to the client
+    raw/               working files used to build the reports, per target
 
 Only scan targets you are authorized to test.
 """
@@ -26,20 +28,24 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import html
 import json
+import os
 import re
+import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 # Result status of a check (internal codes; translated only when rendering).
 VULN, OK, NA = "VULN", "OK", "NA"
@@ -108,6 +114,35 @@ TOOLS = {
 }
 
 
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+# a version like 2.1 or v2.1.4 that is not part of a longer dotted number (e.g. an IP)
+VERSION_RE = re.compile(r"(?<![\d.])v?(\d+\.\d+(?:\.\d+)?)(?![\d.])")
+PIP_PACKAGES = {"wafw00f": "wafw00f", "shcheck": "shcheck"}
+
+
+def tool_version(tool: str, binp: str, timeout: int = 20) -> str:
+    """Best-effort version of a tool: '<bin> --version', then pip metadata, else 'unknown'."""
+    rc, so, se = run([binp, "--version"], timeout)
+    if rc == 0:
+        m = VERSION_RE.search(ANSI_RE.sub("", f"{so}\n{se}"))
+        if m:
+            return m.group(1)
+    pkg = PIP_PACKAGES.get(tool)
+    if pkg:
+        try:
+            from importlib.metadata import version as pkg_version
+            return pkg_version(pkg)
+        except Exception:
+            pass
+    return "unknown"
+
+
+def _display_arg(arg: str, root: Path) -> str:
+    """Shows output paths relative to the results folder (no local paths in the evidence)."""
+    prefix = str(root) + os.sep
+    return arg.replace(prefix, "") if str(root) not in ("", ".") else arg
+
+
 def run(cmd: list[str], timeout: int) -> tuple[int, str, str]:
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -118,8 +153,12 @@ def run(cmd: list[str], timeout: int) -> tuple[int, str, str]:
         return -1, "", str(e)
 
 
-def collect(t: Target, raw_dir: Path, timeout: int, skip: set[str], log) -> None:
-    """Runs each tool and stores its raw output in raw/<target>/<tool>.*"""
+def collect(t: Target, raw_dir: Path, timeout: int, skip: set[str], log,
+            versions: dict[str, str] | None = None, scanner_host: str = "") -> None:
+    """Runs each tool and stores its raw output in raw/<target>/<tool>.*
+
+    <tool>.meta.json keeps what is needed to build the evidence files: command,
+    timestamps (UTC), exit code, tool version and the console output."""
     d = raw_dir / t.slug
     d.mkdir(parents=True, exist_ok=True)
     (d / "target.txt").write_text(t.url + "\n")
@@ -147,13 +186,33 @@ def collect(t: Target, raw_dir: Path, timeout: int, skip: set[str], log) -> None
         else:  # whatweb
             out = d / "whatweb.json"
             out.unlink(missing_ok=True)
-            cmd = [binp, "-q", "-a", "3", f"--log-json={out}", t.url]
+            # no -q: the brief console line is kept as evidence
+            cmd = [binp, "-a", "3", f"--log-json={out}", t.url]
 
         log(f"[*] {t.host}:{t.port} -> {tool}")
+        started = datetime.now(timezone.utc)
         rc, so, se = run(cmd, timeout)
+        finished = datetime.now(timezone.utc)
         if tool == "shcheck":
             out.write_text(so)
         (d / f"{tool}.log").write_text(f"$ {' '.join(cmd)}\nrc={rc}\n\n{so}\n{se}")
+        meta = {
+            "tool": tool,
+            "version": (versions or {}).get(tool, "unknown"),
+            "scanfuse": __version__,
+            "target": t.url,
+            "host": t.host,
+            "port": t.port,
+            "command": [Path(binp).name] + [_display_arg(a, raw_dir.parent) for a in cmd[1:]],
+            "started": started.isoformat(timespec="seconds"),
+            "finished": finished.isoformat(timespec="seconds"),
+            "exit_code": rc,
+            "scanner_host": scanner_host,
+            "stdout": so,
+            "stderr": se,
+        }
+        (d / f"{tool}.meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False),
+                                              encoding="utf-8")
         if rc != 0 and not (out.exists() and out.stat().st_size):
             log(f"[!] {tool} failed on {t.url} (rc={rc}): {se.strip()[:200]}")
 
@@ -386,6 +445,128 @@ def parse_target_dir(d: Path) -> tuple[list[Finding], list[dict]]:
 
 
 # --------------------------------------------------------------------------- #
+# Evidence (raw tool output for the client) - always in English
+# --------------------------------------------------------------------------- #
+EVIDENCE_README = """Evidence - raw tool output
+==========================
+
+This folder contains the console output of every tool that scanfuse ran
+against each target, as proof that the scans were actually performed.
+ANSI color codes were removed and the shcheck JSON output was indented for
+readability; nothing else was changed.
+
+Each file starts with a header containing the tool and its version, the
+target, the exact command line, the start and finish time (UTC) and the
+exit code, followed by the tool's standard output (and standard error,
+when there was any).
+
+Layout: <host_port>/<tool>.txt
+
+Integrity: SHA256SUMS.txt lists the SHA-256 hash of every file in this
+folder. To verify them:
+  Linux:    cd evidence && sha256sum -c SHA256SUMS.txt
+  macOS:    cd evidence && shasum -a 256 -c SHA256SUMS.txt
+  Windows:  Get-FileHash -Algorithm SHA256 <file>   (PowerShell)
+
+Targets and tools:
+"""
+
+
+def _fmt_time(value: str) -> str:
+    try:
+        return datetime.fromisoformat(value).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    except (TypeError, ValueError):
+        return str(value or "unknown")
+
+
+def _clean_output(text: str) -> str:
+    text = ANSI_RE.sub("", text or "")
+    return text.replace("\r\n", "\n").replace("\r", "\n").rstrip()
+
+
+def render_evidence(meta: dict) -> str:
+    tool = str(meta.get("tool", ""))
+    stdout = _clean_output(meta.get("stdout", ""))
+    if tool == "shcheck" and stdout:
+        try:
+            stdout = json.dumps(json.loads(stdout), indent=2, ensure_ascii=False)
+        except json.JSONDecodeError:
+            pass
+    stderr = _clean_output(meta.get("stderr", ""))
+    started, finished = meta.get("started", ""), meta.get("finished", "")
+    try:
+        secs = int((datetime.fromisoformat(finished) - datetime.fromisoformat(started)).total_seconds())
+        duration = f" ({secs}s)"
+    except (TypeError, ValueError):
+        duration = ""
+    rc = meta.get("exit_code", "")
+    command = meta.get("command") or []
+    cmd_txt = shlex.join(map(str, command)) if isinstance(command, list) else str(command)
+
+    lines = [
+        f"Tool:          {tool} {meta.get('version') or 'unknown'}",
+        f"Target:        {meta.get('target', '')} ({meta.get('host', '')}:{meta.get('port', '')})",
+        f"Command:       {cmd_txt}",
+        f"Started:       {_fmt_time(started)}",
+        f"Finished:      {_fmt_time(finished)}{duration}",
+        f"Exit code:     {rc}" + (" (timed out or could not be started)" if rc == -1 else ""),
+    ]
+    if meta.get("scanner_host"):
+        lines.append(f"Scanner host:  {meta['scanner_host']}")
+    lines.append(f"Collected by:  scanfuse {meta.get('scanfuse') or 'unknown'}")
+    bar = "=" * 72
+    lines += ["", bar, "STANDARD OUTPUT", bar, stdout or "(no output)"]
+    if stderr:
+        lines += ["", bar, "STANDARD ERROR", bar, stderr]
+    return "\n".join(lines) + "\n"
+
+
+def write_evidence(out_dir: Path, log) -> dict[str, list[tuple[str, str]]]:
+    """Builds out_dir/evidence from raw/*/<tool>.meta.json.
+
+    Returns {target: [(tool, relative path)]} for linking from the reports,
+    or {} when there is no metadata (scans made before scanfuse 2.1.0)."""
+    metas = []
+    for d in sorted((out_dir / "raw").glob("*")):
+        if not d.is_dir():
+            continue
+        for tool in TOOLS:
+            p = d / f"{tool}.meta.json"
+            if not p.exists():
+                continue
+            try:
+                meta = json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                log(f"[!] invalid evidence metadata, skipping: {p}")
+                continue
+            if isinstance(meta, dict):
+                metas.append((d.name, tool, meta))
+    if not metas:
+        return {}
+
+    ev = out_dir / "evidence"
+    links: dict[str, list[tuple[str, str]]] = {}
+    written = []
+    for slug, tool, meta in metas:
+        rel = f"{slug}/{tool}.txt"
+        (ev / slug).mkdir(parents=True, exist_ok=True)
+        (ev / rel).write_bytes(render_evidence(meta).encode("utf-8"))
+        written.append(rel)
+        target = str(meta.get("target") or slug)
+        links.setdefault(target, []).append((tool, f"evidence/{rel}"))
+
+    summary = "".join(
+        f"  {target} ({Path(items[0][1]).parent.name}): {', '.join(t for t, _ in items)}\n"
+        for target, items in links.items())
+    (ev / "README.txt").write_bytes((EVIDENCE_README + summary).encode("utf-8"))
+    written.append("README.txt")
+
+    sums = "".join(f"{hashlib.sha256((ev / r).read_bytes()).hexdigest()}  {r}\n" for r in sorted(written))
+    (ev / "SHA256SUMS.txt").write_bytes(sums.encode("utf-8"))
+    return links
+
+
+# --------------------------------------------------------------------------- #
 # Translations (reports only - the CLI itself is always in English)
 # --------------------------------------------------------------------------- #
 I18N: dict[str, dict[str, str]] = {
@@ -477,6 +658,8 @@ I18N: dict[str, dict[str, str]] = {
         "scope.tools": "Tools used",
         "scope.na": "N/A means the check does not apply to the target (for example, TLS checks on plain HTTP) or that the tool was not available or failed for that target.",
         "scope.auth": "Only scan targets you are authorized to test.",
+        "scope.evidence": "Evidence (raw tool output)",
+        "scope.evidence_note": "Console output of each tool run, with the exact command, start and finish time (UTC), tool version and exit code. SHA-256 hashes of these files are listed in evidence/SHA256SUMS.txt.",
         "tool.wafw00f": "Web application firewall (WAF) detection",
         "tool.shcheck": "HTTP security headers and information disclosure",
         "tool.sslscan": "TLS protocols, cipher suites and certificate",
@@ -572,6 +755,8 @@ I18N: dict[str, dict[str, str]] = {
         "scope.tools": "Ferramentas utilizadas",
         "scope.na": "N/A significa que a verificação não se aplica ao alvo (por exemplo, verificações de TLS em HTTP sem criptografia) ou que a ferramenta não estava disponível ou falhou para aquele alvo.",
         "scope.auth": "Use apenas contra alvos que você tem autorização para testar.",
+        "scope.evidence": "Evidências (saída bruta das ferramentas)",
+        "scope.evidence_note": "Saída de terminal de cada execução das ferramentas, com o comando exato, horário de início e fim (UTC), versão da ferramenta e código de saída. Os hashes SHA-256 desses arquivos estão em evidence/SHA256SUMS.txt.",
         "tool.wafw00f": "Detecção de firewall de aplicação web (WAF)",
         "tool.shcheck": "Headers de segurança HTTP e divulgação de informação",
         "tool.sslscan": "Protocolos TLS, suítes de cifras e certificado",
@@ -769,6 +954,8 @@ td.ev{word-break:break-word;font-family:ui-monospace,SFMono-Regular,Menlo,Consol
 .matrix td:first-child{white-space:normal;min-width:260px}
 .matrix th.t{white-space:normal;word-break:break-all;min-width:120px;text-transform:none;letter-spacing:0}
 .empty{color:var(--muted);font-style:italic}
+ul.evidence li{margin-bottom:4px;word-break:break-all}
+ul.evidence a{color:var(--accent)}
 footer{text-align:center;color:var(--muted);font-size:12px;margin-top:8px}
 @media (max-width:720px){.sev-cards{grid-template-columns:repeat(2,1fr)}nav.toc ol{columns:1}
 .finding dl{grid-template-columns:1fr}.page{padding:16px}section{padding:18px}}
@@ -779,7 +966,8 @@ section,.cover{border:0;border-radius:0;padding:0 0 16px;break-inside:auto}
 """
 
 
-def write_html(out_dir: Path, findings: list[Finding], techs: list[dict], lang: str = "en") -> None:
+def write_html(out_dir: Path, findings: list[Finding], techs: list[dict], lang: str = "en",
+               evidence: dict[str, list[tuple[str, str]]] | None = None) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     def e(v) -> str:  # tool output is untrusted: always escape
@@ -943,8 +1131,14 @@ def write_html(out_dir: Path, findings: list[Finding], techs: list[dict], lang: 
     a(f'<h3>{T("scope.tools")}</h3><div class="wrap"><table>' + thead("th.tool", "th.purpose") + "<tbody>")
     for tool in TOOLS:
         a(f"<tr><td><b>{e(tool)}</b></td><td>{T('tool.' + tool)}</td></tr>")
-    a(f'</tbody></table></div><p class="note" style="margin-top:12px">{T("scope.na")}</p>'
-      f'<p class="note">{T("summary.disclaimer")} {T("scope.auth")}</p></section>\n')
+    a(f'</tbody></table></div><p class="note" style="margin-top:12px">{T("scope.na")}</p>')
+    if evidence:
+        a(f'<h3>{T("scope.evidence")}</h3><p class="note">{T("scope.evidence_note")}</p><ul class="evidence">')
+        for target, items in evidence.items():
+            links = " · ".join(f'<a href="{e(rel)}">{e(tool)}</a>' for tool, rel in items)
+            a(f"<li><b>{e(target)}</b>: {links}</li>")
+        a("</ul>")
+    a(f'<p class="note">{T("summary.disclaimer")} {T("scope.auth")}</p></section>\n')
 
     a(f"<footer>{T('footer', version=__version__)}</footer>\n</div>\n</body>\n</html>\n")
     (out_dir / "report.html").write_text("".join(h), encoding="utf-8")
@@ -967,7 +1161,8 @@ def md_table(header: list[str], rows: list[list[str]]) -> str:
     return "\n".join(out)
 
 
-def write_md(out_dir: Path, findings: list[Finding], techs: list[dict], lang: str = "en") -> None:
+def write_md(out_dir: Path, findings: list[Finding], techs: list[dict], lang: str = "en",
+             evidence: dict[str, list[tuple[str, str]]] | None = None) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     def T(key: str, **kw) -> str:
@@ -1084,6 +1279,11 @@ def write_md(out_dir: Path, findings: list[Finding], techs: list[dict], lang: st
     a(md_table([T("th.tool"), T("th.purpose")],
                [[f"**{md(tool, True)}**", T("tool." + tool)] for tool in TOOLS]) + "\n")
     a(f"{T('scope.na')}\n")
+    if evidence:
+        a(f"### {T('scope.evidence')}\n")
+        a(f"{T('scope.evidence_note')}\n")
+        a("\n".join(f"- **{md(target)}**: " + ", ".join(f"[{md(tool)}]({rel})" for tool, rel in items)
+                    for target, items in evidence.items()) + "\n")
     a(f"> {T('summary.disclaimer')} {T('scope.auth')}\n")
     a("---\n")
     a(f"_{T('footer', version=__version__)}_\n")
@@ -1135,6 +1335,10 @@ def main(argv=None) -> int:
                     help="language of the generated reports: en or pt (default: en)")
     ap.add_argument("-d", "--delimiter", default=None,
                     help="CSV delimiter (default: ',' for --lang en, ';' for --lang pt)")
+    ap.add_argument("--no-evidence", action="store_true",
+                    help="do not create the evidence/ folder with the raw tool output")
+    ap.add_argument("--evidence-host", action="store_true",
+                    help="include this machine's hostname in the evidence headers")
     ap.add_argument("-q", "--quiet", action="store_true", help="suppress progress messages")
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     args = ap.parse_args(argv)
@@ -1162,13 +1366,17 @@ def main(argv=None) -> int:
                 log(f"[!] {e}")
         if not targets:
             ap.error("no valid targets")
+        skip = {s.strip() for s in args.skip.split(",") if s.strip()}
         missing = [t for t, n in TOOLS.items() if not find_bin(*n)]
         if missing:
             log(f"[!] missing tools (will be skipped): {', '.join(missing)}")
-        skip = {s.strip() for s in args.skip.split(",") if s.strip()}
+        versions = {t: tool_version(t, find_bin(*n)) for t, n in TOOLS.items()
+                    if t not in skip and t not in missing}
+        scanner_host = socket.gethostname() if args.evidence_host else ""
         raw_dir = out_dir / "raw"
         with ThreadPoolExecutor(max_workers=max(1, args.threads)) as ex:
-            futs = [ex.submit(collect, t, raw_dir, args.timeout, skip, log) for t in targets]
+            futs = [ex.submit(collect, t, raw_dir, args.timeout, skip, log, versions, scanner_host)
+                    for t in targets]
             for fu in as_completed(futs):
                 fu.result()
 
@@ -1180,14 +1388,22 @@ def main(argv=None) -> int:
             techs += t
 
     produced = []
+    evidence = {}
+    if not args.no_evidence:
+        evidence = write_evidence(out_dir, log)
+        if evidence:
+            produced.append("evidence/")
+        elif findings:
+            log("[!] no evidence metadata in raw/ (scan made before scanfuse 2.1.0); "
+                "evidence/ was not created")
     if "csv" in args.formats:
         write_csvs(out_dir, findings, techs, delim, args.lang)
         produced += ["findings.csv", "matrix.csv", "technologies.csv"]
     if "html" in args.formats:
-        write_html(out_dir, findings, techs, args.lang)
+        write_html(out_dir, findings, techs, args.lang, evidence)
         produced.append("report.html")
     if "md" in args.formats:
-        write_md(out_dir, findings, techs, args.lang)
+        write_md(out_dir, findings, techs, args.lang, evidence)
         produced.append("report.md")
     vulns = sum(f.status == VULN for f in findings)
     log(f"[+] {len(findings)} checks, {vulns} vulnerable -> {out_dir}/{', '.join(produced)}")

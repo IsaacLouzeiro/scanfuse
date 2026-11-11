@@ -45,6 +45,8 @@ python3 scanfuse.py -t target.com --format html    # only the HTML report
 | `--threads` | targets scanned in parallel (default: 3) |
 | `--timeout` | timeout per tool, in seconds (default: 300) |
 | `--skip` | comma-separated tools to skip |
+| `--no-evidence` | do not create the `evidence/` folder |
+| `--evidence-host` | include this machine's hostname in the evidence headers (off by default) |
 | `-q`, `--quiet` | suppress progress messages |
 
 The command line and its messages are always in English; `--lang` only changes the content of the generated reports.
@@ -58,7 +60,11 @@ results/
 ├── findings.csv       target,tool,category,check,vulnerable,severity,detail,recommendation
 ├── matrix.csv         target,total_vulns,[sslscan] TLSv1.0 enabled,[shcheck] Missing ... header,...
 ├── technologies.csv   target,url,technology,version,detail
-└── raw/<host_port>/   raw output of each tool (+ a .log with the command that was run)
+├── evidence/          raw tool output to hand over to the client (see below)
+│   ├── README.txt
+│   ├── SHA256SUMS.txt
+│   └── <host_port>/<tool>.txt
+└── raw/<host_port>/   working files used to build the reports
 ```
 
 The HTML and Markdown reports are organized like a pentest report:
@@ -73,6 +79,32 @@ The HTML and Markdown reports are organized like a pentest report:
 Values of `vulnerable` in the CSVs: `YES`, `NO`, `N/A` (the check does not apply or the tool did not run for that target). With `--lang pt`: `SIM`, `NÃO`, `N/A`, and the column names are in Portuguese.
 
 All tool output is escaped before going into the HTML and Markdown reports, since it comes from the scanned target.
+
+## Evidence for the client
+
+`evidence/` proves that the scans were actually run. Each `<host_port>/<tool>.txt` starts with a header and then shows the tool's console output:
+
+```
+Tool:          sslscan 2.1.4
+Target:        https://target.com (target.com:443)
+Command:       sslscan --no-colour --xml=raw/target.com_443/sslscan.xml target.com:443
+Started:       2026-11-12 10:31:05 UTC
+Finished:      2026-11-12 10:31:19 UTC (14s)
+Exit code:     0
+Collected by:  scanfuse 2.1.0
+
+========================================================================
+STANDARD OUTPUT
+========================================================================
+...
+```
+
+- ANSI color codes are removed and the shcheck JSON is indented; nothing else is changed.
+- Paths in the command line are relative to the results folder, so no local paths from your machine end up in the evidence.
+- `SHA256SUMS.txt` lets the client check that the files were not modified (`cd evidence && sha256sum -c SHA256SUMS.txt`).
+- The **Scope and methodology** section of the reports links to each evidence file, so send the whole results folder (or at least the reports together with `evidence/`).
+- `--reparse` rebuilds `evidence/` from `raw/`. Scans made before 2.1.0 did not record timestamps and versions, so no evidence is generated for them.
+- The raw output can include internal details of the target (IP addresses, banners). Review it before sending.
 
 ## Tests
 

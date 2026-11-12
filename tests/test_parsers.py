@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import scanfuse as sf
+import scanwitness as sf
 
 FIX = Path(__file__).parent / "fixtures" / "raw" / "legacy.example_443"
 ALL_FILES = ["findings.csv", "matrix.csv", "technologies.csv", "report.html", "report.md"]
@@ -360,7 +360,14 @@ class Evidence(unittest.TestCase):
         txt = sf.render_evidence({"tool": "sslscan", "exit_code": -1, "stderr": "timed out after 5s"})
         self.assertIn("Exit code:     -1 (timed out or could not be started)", txt)
         self.assertIn("(no output)", txt)
+        self.assertIn("Collected by:  unknown", txt)
         self.assertIn("Tool:          sslscan unknown", txt)
+
+    def test_render_evidence_collector(self):
+        new = sf.render_evidence({"tool": "x", "collector": f"scanwitness {sf.__version__}"})
+        self.assertIn(f"Collected by:  scanwitness {sf.__version__}", new)
+        old = sf.render_evidence({"tool": "x", "scanfuse": "2.1.0"})   # metadata from 2.1.0
+        self.assertIn("Collected by:  scanfuse 2.1.0", old)
 
 
 class Versions(unittest.TestCase):

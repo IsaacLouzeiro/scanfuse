@@ -1,4 +1,6 @@
-# scanfuse
+# scanwitness
+
+> Formerly **scanfuse**, renamed in 2.2.0 to avoid confusion with another project of the same name.
 
 Runs the standard web recon scans of a pentest and consolidates them into **one report**: an HTML report, a Markdown report and CSV files. For each target, it tells you whether each issue is present (`YES`) or not (`NO`), with severity, evidence and a recommendation.
 
@@ -24,13 +26,13 @@ The script itself only uses the Python 3.9+ standard library.
 ## Usage
 
 ```bash
-python3 scanfuse.py -t https://target.com
-python3 scanfuse.py -t target1.com -t https://target2.com:8443
-python3 scanfuse.py -f targets.txt -o results --threads 4 --timeout 300
-python3 scanfuse.py -f targets.txt --skip whatweb,wafw00f
-python3 scanfuse.py --reparse results              # rebuild the reports from results/raw without scanning again
-python3 scanfuse.py -t target.com --lang pt        # reports in Portuguese (Brazil)
-python3 scanfuse.py -t target.com --format html    # only the HTML report
+python3 scanwitness.py -t https://target.com
+python3 scanwitness.py -t target1.com -t https://target2.com:8443
+python3 scanwitness.py -f targets.txt -o results --threads 4 --timeout 300
+python3 scanwitness.py -f targets.txt --skip whatweb,wafw00f
+python3 scanwitness.py --reparse results              # rebuild the reports from results/raw without scanning again
+python3 scanwitness.py -t target.com --lang pt        # reports in Portuguese (Brazil)
+python3 scanwitness.py -t target.com --format html    # only the HTML report
 ```
 
 | Option | Description |
@@ -38,7 +40,7 @@ python3 scanfuse.py -t target.com --format html    # only the HTML report
 | `-t`, `--target` | target URL or host (can be repeated) |
 | `-f`, `--file` | file with one target per line (`#` starts a comment) |
 | `--reparse DIR` | only rebuild the reports from `DIR/raw` |
-| `-o`, `--output` | output folder (default: `scanfuse_<date>`) |
+| `-o`, `--output` | output folder (default: `scanwitness_<date>`) |
 | `--format` | `csv`, `html`, `md` (comma-separated) or `all`; **default: all** |
 | `--lang` | language of the generated reports: `en` or `pt`; **default: `en`** |
 | `-d`, `--delimiter` | CSV delimiter (default: `,` for `en`, `;` for `pt`, so it opens directly in Excel) |
@@ -91,7 +93,7 @@ Command:       sslscan --no-colour --xml=raw/target.com_443/sslscan.xml target.c
 Started:       2026-11-12 10:31:05 UTC
 Finished:      2026-11-12 10:31:19 UTC (14s)
 Exit code:     0
-Collected by:  scanfuse 2.1.0
+Collected by:  scanwitness 2.2.0
 
 ========================================================================
 STANDARD OUTPUT
@@ -103,7 +105,7 @@ STANDARD OUTPUT
 - Paths in the command line are relative to the results folder, so no local paths from your machine end up in the evidence.
 - `SHA256SUMS.txt` lets the client check that the files were not modified (`cd evidence && sha256sum -c SHA256SUMS.txt`).
 - The **Scope and methodology** section of the reports links to each evidence file, so send the whole results folder (or at least the reports together with `evidence/`).
-- `--reparse` rebuilds `evidence/` from `raw/`. Scans made before 2.1.0 did not record timestamps and versions, so no evidence is generated for them.
+- `--reparse` rebuilds `evidence/` from `raw/`. Scans made with versions older than 2.1.0 did not record timestamps and versions, so no evidence is generated for them.
 - The raw output can include internal details of the target (IP addresses, banners). Review it before sending.
 
 ## Tests
@@ -112,8 +114,10 @@ STANDARD OUTPUT
 python3 -m unittest discover tests -v
 ```
 
-## Upgrading from 1.x
+## Upgrading
 
-Version 2.0 renamed the output files (`achados.csv` → `findings.csv`, `matriz.csv` → `matrix.csv`, `tecnologias.csv` → `technologies.csv`, `relatorio.*` → `report.*`) and generates reports in English by default. Use `--lang pt` for Portuguese reports (it also keeps `;` as the CSV delimiter, as in 1.x).
+**From scanfuse 2.x:** the script is now `scanwitness.py` and the default output folder is `scanwitness_<date>`. Nothing else changed, and `--reparse` still works on results folders created by scanfuse.
+
+**From 1.x:** version 2.0 renamed the output files (`achados.csv` → `findings.csv`, `matriz.csv` → `matrix.csv`, `tecnologias.csv` → `technologies.csv`, `relatorio.*` → `report.*`) and generates reports in English by default. Use `--lang pt` for Portuguese reports (it also keeps `;` as the CSV delimiter, as in 1.x).
 
 > Only scan targets you are authorized to test.

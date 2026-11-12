@@ -9,7 +9,7 @@ Runs the standard web recon scans of a pentest and consolidates them into **one 
 | [sslscan](https://github.com/rbsec/sslscan) | SSLv2/v3, TLS 1.0/1.1, missing TLS 1.3, weak/medium cipher suites, Heartbleed, CRIME, insecure renegotiation, TLS_FALLBACK_SCSV, expired/self-signed/SHA1/short-key certificate |
 | [whatweb](https://github.com/urbanadventurer/WhatWeb) | technology fingerprinting, with exposed versions |
 
-A tool missing from `PATH` is skipped with a warning; the others still run.
+wafw00f and shcheck are found in scanwitness's own environment (so they work with `pipx`) or on `PATH`; sslscan and whatweb are looked up on `PATH`. A missing tool is skipped with a warning; the others still run.
 
 ## Installation
 
@@ -106,7 +106,7 @@ Command:       sslscan --no-colour --xml=raw/target.com_443/sslscan.xml target.c
 Started:       2026-11-12 10:31:05 UTC
 Finished:      2026-11-12 10:31:19 UTC (14s)
 Exit code:     0
-Collected by:  scanwitness 2.2.0
+Collected by:  scanwitness 2.2.1
 
 ========================================================================
 STANDARD OUTPUT

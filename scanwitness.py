@@ -45,7 +45,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-__version__ = "2.2.0"
+__version__ = "2.2.1"
 
 # Result status of a check (internal codes; translated only when rendering).
 VULN, OK, NA = "VULN", "OK", "NA"
@@ -98,8 +98,28 @@ def parse_target(value: str) -> Target:
 # --------------------------------------------------------------------------- #
 # Running the tools
 # --------------------------------------------------------------------------- #
+def _own_script_dirs() -> list[str]:
+    """Folders where pip/pipx put the console scripts of this Python environment.
+
+    pipx installs wafw00f and shcheck (our dependencies) in scanwitness's own
+    virtualenv but only exposes the 'scanwitness' command on PATH, so they must
+    be looked up next to the running interpreter as well."""
+    dirs = [str(Path(sys.executable).parent)]  # not resolved: keep the venv's bin/
+    try:
+        import sysconfig
+        dirs.append(sysconfig.get_path("scripts"))
+    except (KeyError, ImportError):
+        pass
+    return [d for d in dict.fromkeys(dirs) if d and os.path.isdir(d)]
+
+
 def find_bin(*names: str) -> str | None:
+    """Finds a tool in this Python environment first, then on PATH."""
     for n in names:
+        for d in _own_script_dirs():
+            path = shutil.which(n, path=d)
+            if path:
+                return path
         path = shutil.which(n)
         if path:
             return path
@@ -281,16 +301,24 @@ def parse_shcheck(target: str, path: Path) -> list[Finding]:
     if not isinstance(data, dict) or not data:
         return []
     # format: {final_url: {"present": {...}, "missing": [...], "information_disclosure": {...}}}
-    res = next(iter(data.values())) if "present" not in data else data
+    if "present" in data:
+        final_url, res = target, data
+    else:
+        final_url, res = next(iter(data.items()))
     if not isinstance(res, dict):
         return []
+    # HSTS is ignored by browsers over plain HTTP, so it only applies to HTTPS
+    # (a target on http:// that redirects to https:// is checked on the final URL)
+    plain_http = urlparse(str(final_url)).scheme.lower() == "http"
     present = {k.lower(): v for k, v in (res.get("present") or {}).items()}
     disclosure = {k.lower(): v for k, v in (res.get("information_disclosure") or {}).items()}
 
     out = []
     for h, sev in SEC_HEADERS.items():
         hl = h.lower()
-        if hl in present:
+        if hl == "strict-transport-security" and plain_http:
+            status, s, ev, msg = NA, "", "", "hsts_http"
+        elif hl in present:
             val = str(present[hl])
             status, s, ev, msg = OK, "", f"{h}: {val}", ""
             # simple checks for weak configuration
@@ -582,7 +610,7 @@ I18N: dict[str, dict[str, str]] = {
         "col.total_vulns": "total_vulns", "col.url": "url", "col.technology": "technology",
         "col.version": "version",
         # check titles
-        "check.no_waf": "No WAF detected",
+        "check.no_waf": "Missing web application firewall (WAF)",
         "check.header": "Missing {arg} header",
         "check.header_weak": "Missing or weak {arg} header",
         "check.info_disclosure": "Information disclosure in headers",
@@ -604,6 +632,7 @@ I18N: dict[str, dict[str, str]] = {
         "msg.no_waf": "No WAF identified (an unrecognized WAF may still be present)",
         "msg.header_missing": "Header not present in the response",
         "msg.hsts_low": "max-age too low (minimum 15552000): {evidence}",
+        "msg.hsts_http": "Not applicable: browsers ignore HSTS over plain HTTP",
         "msg.csp_weak": "Permissive policy: {evidence}",
         "msg.no_result": "No result",
         # recommendations
@@ -682,7 +711,7 @@ I18N: dict[str, dict[str, str]] = {
         "col.detail": "detalhe", "col.recommendation": "recomendacao",
         "col.total_vulns": "total_vulns", "col.url": "url", "col.technology": "tecnologia",
         "col.version": "versao",
-        "check.no_waf": "Sem WAF detectado",
+        "check.no_waf": "Ausência de firewall de aplicação web (WAF)",
         "check.header": "Ausência do header {arg}",
         "check.header_weak": "Ausência ou configuração fraca do header {arg}",
         "check.info_disclosure": "Divulgação de informação em headers",
@@ -703,6 +732,7 @@ I18N: dict[str, dict[str, str]] = {
         "msg.no_waf": "Nenhum WAF identificado (pode haver WAF não reconhecido)",
         "msg.header_missing": "Header ausente na resposta",
         "msg.hsts_low": "max-age baixo (mínimo 15552000): {evidence}",
+        "msg.hsts_http": "Não se aplica: navegadores ignoram HSTS em HTTP sem criptografia",
         "msg.csp_weak": "Política permissiva: {evidence}",
         "msg.no_result": "Sem resultado",
         "rec.no_waf": "Considere colocar a aplicação atrás de um firewall de aplicação web para filtrar ataques comuns. Pode já existir um WAF não reconhecido pela ferramenta; confirme antes de reportar.",

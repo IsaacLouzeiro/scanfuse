@@ -49,6 +49,22 @@ class Parsers(unittest.TestCase):
         self.assertEqual((ref.status, ref.severity, ref.msg), (sf.VULN, "low", "header_missing"))
         self.assertIn("PHP/7.2.24", r["info_disclosure"].evidence)
 
+    def test_hsts_not_applicable_over_http(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        p = tmp / "shcheck.json"
+        cases = {
+            "http://a.example/": sf.NA,     # plain HTTP: HSTS is ignored by browsers
+            "https://a.example/": sf.VULN,  # HTTPS without HSTS
+        }
+        for final_url, expected in cases.items():
+            p.write_text(sf.json.dumps({final_url: {"present": {}}}))
+            hsts = by_check(sf.parse_shcheck("http://a.example", p))["header:Strict-Transport-Security"]
+            self.assertEqual(hsts.status, expected, final_url)
+            self.assertEqual(hsts.severity, "" if expected == sf.NA else "medium", final_url)
+            if expected == sf.NA:
+                self.assertEqual(sf.detail_text(hsts, "en"), sf.I18N["en"]["msg.hsts_http"])
+
     def test_csp_wildcard_detection(self):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp)
@@ -67,6 +83,26 @@ class Parsers(unittest.TestCase):
     def test_wafw00f(self):
         (f,) = sf.parse_wafw00f("x", FIX / "wafw00f.json")
         self.assertEqual((f.status, f.severity), (sf.VULN, "low"))
+
+    def test_find_bin_uses_own_environment(self):
+        # pipx keeps wafw00f/shcheck inside scanwitness's venv, which is not on PATH
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        tool = tmp / "fake-tool-sw"
+        tool.write_text("#!/bin/sh\n")
+        tool.chmod(0o755)
+        old_path = os.environ.get("PATH", "")
+        self.addCleanup(os.environ.__setitem__, "PATH", old_path)
+        os.environ["PATH"] = "/nonexistent"
+        orig = sf._own_script_dirs
+        self.addCleanup(setattr, sf, "_own_script_dirs", orig)
+        sf._own_script_dirs = lambda: [str(tmp)]
+        self.assertEqual(sf.find_bin("missing-sw", "fake-tool-sw"), str(tool))
+        sf._own_script_dirs = lambda: []
+        self.assertIsNone(sf.find_bin("fake-tool-sw"))
+
+    def test_own_script_dirs_include_interpreter_dir(self):
+        self.assertIn(str(Path(sys.executable).parent), sf._own_script_dirs())
 
     def test_whatweb(self):
         (f,), techs = sf.parse_whatweb("x", FIX / "whatweb.json")
@@ -273,6 +309,10 @@ class Evidence(unittest.TestCase):
         old_path = os.environ.get("PATH", "")
         os.environ["PATH"] = str(bindir)
         self.addCleanup(os.environ.__setitem__, "PATH", old_path)
+        # use only the fake tools, even if the real ones are installed in this venv
+        orig = sf._own_script_dirs
+        sf._own_script_dirs = lambda: []
+        self.addCleanup(setattr, sf, "_own_script_dirs", orig)
 
     def scan(self, *extra):
         out = self.tmp / "results"

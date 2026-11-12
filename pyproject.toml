@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scanwitness"
+dynamic = ["version"]
+description = "Runs wafw00f, shcheck, sslscan and whatweb and consolidates the results into HTML, Markdown and CSV reports with severity, evidence and recommendations per target"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Isaac E. Louzeiro" }]
+keywords = ["security", "pentest", "recon", "tls", "security-headers", "waf", "report"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators",
+    "Natural Language :: English",
+    "Natural Language :: Portuguese (Brazilian)",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Security",
+]
+dependencies = ["wafw00f", "shcheck"]
+
+[project.scripts]
+scanwitness = "scanwitness:main"
+
+[project.urls]
+Homepage = "https://github.com/IsaacLouzeiro/scanwitness"
+Issues = "https://github.com/IsaacLouzeiro/scanwitness/issues"
+
+[tool.setuptools]
+py-modules = ["scanwitness"]
+
+[tool.setuptools.dynamic]
+version = { attr = "scanwitness.__version__" }

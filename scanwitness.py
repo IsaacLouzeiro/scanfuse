@@ -513,9 +513,7 @@ def render_evidence(meta: dict) -> str:
     ]
     if meta.get("scanner_host"):
         lines.append(f"Scanner host:  {meta['scanner_host']}")
-    # "collector" since 2.2.0; 2.1.0 (released as scanfuse) stored {"scanfuse": version}
-    collector = meta.get("collector") or (f"scanfuse {meta['scanfuse']}" if meta.get("scanfuse") else "unknown")
-    lines.append(f"Collected by:  {collector}")
+    lines.append(f"Collected by:  {meta.get('collector') or 'unknown'}")
     bar = "=" * 72
     lines += ["", bar, "STANDARD OUTPUT", bar, stdout or "(no output)"]
     if stderr:

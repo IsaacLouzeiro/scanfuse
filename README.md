@@ -1,7 +1,5 @@
 # scanwitness
 
-> Formerly **scanfuse**, renamed in 2.2.0 to avoid confusion with another project of the same name.
-
 Runs the standard web recon scans of a pentest and consolidates them into **one report**: an HTML report, a Markdown report and CSV files. For each target, it tells you whether each issue is present (`YES`) or not (`NO`), with severity, evidence and a recommendation.
 
 | Tool | What it checks |
@@ -15,25 +13,40 @@ A tool missing from `PATH` is skipped with a warning; the others still run.
 
 ## Installation
 
+Requires Python 3.10+.
+
 ```bash
-pip install -r requirements.txt     # wafw00f + shcheck
+pipx install scanwitness            # or: pip install scanwitness  (also installs wafw00f and shcheck)
 brew install sslscan                # or: apt install sslscan
 apt install whatweb                 # Kali/Debian; on macOS: git clone the official repository
 ```
 
-The script itself only uses the Python 3.9+ standard library.
+`sslscan` and `whatweb` are not Python packages, so they are installed with your system's package manager.
+
+From source:
+
+```bash
+git clone https://github.com/IsaacLouzeiro/scanwitness.git
+cd scanwitness
+pip install -r requirements.txt     # wafw00f + shcheck
+python3 scanwitness.py --help
+```
+
+scanwitness itself only uses the Python standard library.
 
 ## Usage
 
 ```bash
-python3 scanwitness.py -t https://target.com
-python3 scanwitness.py -t target1.com -t https://target2.com:8443
-python3 scanwitness.py -f targets.txt -o results --threads 4 --timeout 300
-python3 scanwitness.py -f targets.txt --skip whatweb,wafw00f
-python3 scanwitness.py --reparse results              # rebuild the reports from results/raw without scanning again
-python3 scanwitness.py -t target.com --lang pt        # reports in Portuguese (Brazil)
-python3 scanwitness.py -t target.com --format html    # only the HTML report
+scanwitness -t https://target.com
+scanwitness -t target1.com -t https://target2.com:8443
+scanwitness -f targets.txt -o results --threads 4 --timeout 300
+scanwitness -f targets.txt --skip whatweb,wafw00f
+scanwitness --reparse results              # rebuild the reports from results/raw without scanning again
+scanwitness -t target.com --lang pt        # reports in Portuguese (Brazil)
+scanwitness -t target.com --format html    # only the HTML report
 ```
+
+When running from source, use `python3 scanwitness.py` instead of `scanwitness`.
 
 | Option | Description |
 |---|---|
@@ -114,10 +127,12 @@ STANDARD OUTPUT
 python3 -m unittest discover tests -v
 ```
 
-## Upgrading
+## Upgrading from 1.x
 
-**From scanfuse 2.x:** the script is now `scanwitness.py` and the default output folder is `scanwitness_<date>`. Nothing else changed, and `--reparse` still works on results folders created by scanfuse.
-
-**From 1.x:** version 2.0 renamed the output files (`achados.csv` → `findings.csv`, `matriz.csv` → `matrix.csv`, `tecnologias.csv` → `technologies.csv`, `relatorio.*` → `report.*`) and generates reports in English by default. Use `--lang pt` for Portuguese reports (it also keeps `;` as the CSV delimiter, as in 1.x).
+Version 2.0 renamed the output files (`achados.csv` → `findings.csv`, `matriz.csv` → `matrix.csv`, `tecnologias.csv` → `technologies.csv`, `relatorio.*` → `report.*`) and generates reports in English by default. Use `--lang pt` for Portuguese reports (it also keeps `;` as the CSV delimiter, as in 1.x).
 
 > Only scan targets you are authorized to test.
+
+## License
+
+[MIT](https://github.com/IsaacLouzeiro/scanwitness/blob/main/LICENSE)

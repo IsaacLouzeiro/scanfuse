@@ -1,7 +1,6 @@
 __pycache__/
 *.pyc
 scanwitness_*/
-scanfuse_*/
 results*/
 resultado*/
 .venv/

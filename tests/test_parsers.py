@@ -366,8 +366,6 @@ class Evidence(unittest.TestCase):
     def test_render_evidence_collector(self):
         new = sf.render_evidence({"tool": "x", "collector": f"scanwitness {sf.__version__}"})
         self.assertIn(f"Collected by:  scanwitness {sf.__version__}", new)
-        old = sf.render_evidence({"tool": "x", "scanfuse": "2.1.0"})   # metadata from 2.1.0
-        self.assertIn("Collected by:  scanfuse 2.1.0", old)
 
 
 class Versions(unittest.TestCase):

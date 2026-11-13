@@ -11,9 +11,10 @@ requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Isaac E. Louzeiro" }]
-keywords = ["security", "pentest", "recon", "tls", "security-headers", "waf", "report"]
+keywords = ["security", "pentest", "recon", "tls", "security-headers", "waf", "report",
+            "vulnerability-scanner", "owasp"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Information Technology",
     "Intended Audience :: System Administrators",
@@ -23,6 +24,10 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Security",
 ]
 dependencies = ["wafw00f", "shcheck"]
@@ -33,6 +38,7 @@ scanwitness = "scanwitness:main"
 [project.urls]
 Homepage = "https://github.com/IsaacLouzeiro/scanwitness"
 Issues = "https://github.com/IsaacLouzeiro/scanwitness/issues"
+Changelog = "https://github.com/IsaacLouzeiro/scanwitness/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
 py-modules = ["scanwitness"]

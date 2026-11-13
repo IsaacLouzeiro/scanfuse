@@ -45,7 +45,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-__version__ = "2.2.1"
+__version__ = "2.2.2"
 
 # Result status of a check (internal codes; translated only when rendering).
 VULN, OK, NA = "VULN", "OK", "NA"
